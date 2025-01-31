@@ -278,7 +278,7 @@
         if (!isDeepseekModel(parsedBody) || isTitleRequest(parsedBody)) {
           return originalFetch.apply(this, args);
         }
-  
+        console.log("here")
                 // ** NEW: Remove "reasoning" from each message **
         if (parsedBody.messages && Array.isArray(parsedBody.messages)) {
             parsedBody.messages = parsedBody.messages.map(message => {
@@ -287,10 +287,10 @@
             return rest;
             });
         }
-        console.log('Parsed body:', parsedBody);
-        options.body = JSON.stringify(parsedBody);
+        // console.log('Parsed body:', parsedBody);
+        // options.body = JSON.stringify(parsedBody);
         // 5. Make the actual fetch call to get the response
-        const response = await originalFetch.apply(this, args);
+        const response = await originalFetch.apply(this, [url,JSON.stringify(parsedBody)]);
   
         // 6. Check the content-type for streaming
         if (response.headers.get('content-type')?.includes('text/event-stream')) {
