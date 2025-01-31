@@ -288,7 +288,7 @@
             });
         }
         
-
+        options.body = JSON.stringify(parsedBody);
         // 5. Make the actual fetch call to get the response
         const response = await originalFetch.apply(this, args);
   
