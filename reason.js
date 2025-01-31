@@ -279,6 +279,16 @@
           return originalFetch.apply(this, args);
         }
   
+                // ** NEW: Remove "reasoning" from each message **
+        if (parsedBody.messages && Array.isArray(parsedBody.messages)) {
+            parsedBody.messages = parsedBody.messages.map(message => {
+            // Use object destructuring to remove the 'reasoning' property.
+            const { reasoning, ...rest } = message;
+            return rest;
+            });
+        }
+        
+
         // 5. Make the actual fetch call to get the response
         const response = await originalFetch.apply(this, args);
   
