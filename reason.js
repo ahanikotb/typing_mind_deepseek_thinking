@@ -68,7 +68,8 @@
         let reasoningStarted = false;
         let reasoningEnded = false;
         let startThinkingTime = null;
-        let citations = []; // Add this to store citations
+        let citations = null;
+        let responseFinished = false;
       
         const stream = new ReadableStream({
           async start(controller) {
@@ -77,20 +78,23 @@
             try {
               while (true) {
                 const { done, value } = await reader.read();
-                if (done) {
-                  // When stream is done, add citations if they exist
-                  if (citations.length > 0) {
-                    const citationsText = '\n\n---\n\n' + citations.map(
-                      (citation, i) => `[${i + 1}]> ${citation}`
-                    ).join('\n');
-                    
-                    const citationsData = {
+                
+                if (done && !responseFinished) {
+                  responseFinished = true;
+                  // Only add citations if we have them
+                  if (citations && citations.length > 0) {
+                    // Add a separator before citations
+                    const citationsChunk = {
                       choices: [{
-                        delta: { content: citationsText }
+                        delta: {
+                          content: '\n\n---\n\nSources:\n' + citations.map(
+                            (citation, i) => `[${i + 1}]> ${citation}`
+                          ).join('\n')
+                        }
                       }]
                     };
                     controller.enqueue(
-                      textEncoder.encode(`data: ${JSON.stringify(citationsData)}\n\n`)
+                      textEncoder.encode(`data: ${JSON.stringify(citationsChunk)}\n\n`)
                     );
                   }
                   break;
@@ -110,21 +114,19 @@
                     try {
                       const data = JSON.parse(line.slice(6));
       
-                      // Store citations if they exist in the data
-                      if (data.citations) {
+                      // Store citations if we find them
+                      if (data.citations && !citations) {
                         citations = data.citations;
                       }
       
                       if (data?.choices?.[0]?.delta) {
                         const delta = data.choices[0].delta;
       
-                        if (delta.reasoning && delta.content === null) {
+                        if (delta.reasoning && !delta.content) {
                           if (!reasoningStarted) {
                             startThinkingTime = performance.now();
                             const thinkingHeader = {
-                              ...data,
                               choices: [{
-                                ...data.choices[0],
                                 delta: { content: '💭 Thinking...\n\n> ' }
                               }]
                             };
@@ -136,16 +138,14 @@
       
                           const content = delta.reasoning.replace(/\n/g, '\n> ');
                           const modifiedData = {
-                            ...data,
                             choices: [{
-                              ...data.choices[0],
                               delta: { content }
                             }]
                           };
                           controller.enqueue(
                             textEncoder.encode(`data: ${JSON.stringify(modifiedData)}\n\n`)
                           );
-                        } else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
+                        } else if (delta.content !== undefined && reasoningStarted && !reasoningEnded) {
                           reasoningEnded = true;
       
                           const thinkingDuration = Math.round(
@@ -153,9 +153,7 @@
                           );
       
                           const separatorData = {
-                            ...data,
                             choices: [{
-                              ...data.choices[0],
                               delta: {
                                 content: `\n\n💡 Thought for ${thinkingDuration} seconds\n\n---\n\n`
                               }
@@ -184,6 +182,7 @@
       
               controller.close();
             } catch (error) {
+              console.error('Streaming error:', error);
               controller.error(error);
             }
           }
@@ -195,7 +194,6 @@
           statusText: response.statusText
         });
       }
-      
       
   
     /**
