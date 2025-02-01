@@ -65,9 +65,6 @@
         const decoder = new TextDecoder();
         const textEncoder = new TextEncoder();
         let buffer = '';
-        let reasoningStarted = false;
-        let reasoningEnded = false;
-        let startThinkingTime = null;
         let citations = null;
       
         const stream = new ReadableStream({
@@ -77,119 +74,44 @@
                 const { done, value } = await reader.read();
                 if (done) break;
       
-                // Decode incoming bytes and split into lines
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
-                // Keep the last (possibly incomplete) line in the buffer
                 buffer = lines.pop() || '';
       
                 for (const line of lines) {
-                  // Process only lines that start with "data: "
                   if (line.startsWith('data: ')) {
-                    // If the line indicates the end of the stream...
                     if (line.includes('[DONE]')) {
-                      // If we have citations waiting to be sent, send them first
+                      // Before sending [DONE], append citations if they exist
                       if (citations) {
                         const citationsText = citations
                           .map((citation, i) => `[${i + 1}] > ${citation}`)
                           .join("\n");
-                        const citationsMessage = `data: ${JSON.stringify({
-                          citations: citationsText
-                        })}\n\n`;
+                        const citationsMessage = `data: ${JSON.stringify({ citations: citationsText })}\n\n`;
                         controller.enqueue(textEncoder.encode(citationsMessage));
-                        // Clear citations so we don't send them twice
+                        // Clear citations to avoid duplicate sending
                         citations = null;
                       }
-                      // Then enqueue the [DONE] message and continue
                       controller.enqueue(textEncoder.encode(`${line}\n`));
                       continue;
                     }
-      
                     try {
-                      // Parse the JSON from the SSE line
                       const data = JSON.parse(line.slice(6));
-      
-                      // Capture citations if they appear in any chunk (first occurrence)
+                      // Save citations if they exist in this data chunk
                       if (data.citations && !citations) {
                         citations = data.citations;
                       }
-      
-                      // Process chunks that include a "delta" payload
-                      if (data?.choices?.[0]?.delta) {
-                        const delta = data.choices[0].delta;
-      
-                        // If it's reasoning content (with no normal content yet)
-                        if (delta.reasoning && delta.content === null) {
-                          if (!reasoningStarted) {
-                            startThinkingTime = performance.now();
-                            // Send a "thinking" header message once
-                            const thinkingHeader = {
-                              ...data,
-                              choices: [{
-                                ...data.choices[0],
-                                delta: { content: '💭 Thinking...\n\n> ' }
-                              }]
-                            };
-                            controller.enqueue(
-                              textEncoder.encode(`data: ${JSON.stringify(thinkingHeader)}\n\n`)
-                            );
-                            reasoningStarted = true;
-                          }
-      
-                          // Prefix every line of the reasoning text with "> "
-                          const content = delta.reasoning.replace(/\n/g, '\n> ');
-                          const modifiedData = {
-                            ...data,
-                            choices: [{
-                              ...data.choices[0],
-                              delta: { content }
-                            }]
-                          };
-                          controller.enqueue(
-                            textEncoder.encode(`data: ${JSON.stringify(modifiedData)}\n\n`)
-                          );
-                        }
-                        // When normal content arrives after reasoning has started
-                        else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
-                          reasoningEnded = true;
-                          // Calculate how long the "thinking" lasted
-                          const thinkingDuration = Math.round(
-                            (performance.now() - startThinkingTime) / 1000
-                          );
-                          const separatorData = {
-                            ...data,
-                            choices: [{
-                              ...data.choices[0],
-                              delta: {
-                                content: `\n\n💡 Thought for ${thinkingDuration} seconds\n\n---\n\n`
-                              }
-                            }]
-                          };
-                          controller.enqueue(
-                            textEncoder.encode(`data: ${JSON.stringify(separatorData)}\n\n`)
-                          );
-                          // Then send along the current content line as-is
-                          controller.enqueue(textEncoder.encode(`${line}\n`));
-                        } else {
-                          // For any other delta, just forward the line unchanged
-                          controller.enqueue(textEncoder.encode(`${line}\n`));
-                        }
-                      } else {
-                        // If no delta is present, just pass the line along
-                        controller.enqueue(textEncoder.encode(`${line}\n`));
-                      }
+                      // Process other parts of data as needed...
+                      controller.enqueue(textEncoder.encode(`${line}\n`));
                     } catch (parseError) {
                       console.error('Error parsing streaming data:', parseError);
                       controller.enqueue(textEncoder.encode(`${line}\n`));
                     }
                   } else {
-                    // For lines not starting with "data: ", pass them unchanged
                     controller.enqueue(textEncoder.encode(`${line}\n`));
                   }
                 }
               }
-      
-              // In case the stream ended without a [DONE] event, send citations now.
+              // If stream ends without a [DONE] event, send citations now.
               if (citations) {
                 const citationsText = citations
                   .map((citation, i) => `[${i + 1}] > ${citation}`)
@@ -197,7 +119,6 @@
                 const citationsMessage = `data: ${JSON.stringify({ citations: citationsText })}\n\n`;
                 controller.enqueue(textEncoder.encode(citationsMessage));
               }
-      
               controller.close();
             } catch (error) {
               controller.error(error);
@@ -211,6 +132,7 @@
           statusText: response.statusText
         });
       }
+      
       
     /**
      * ------------------------------------------------------
