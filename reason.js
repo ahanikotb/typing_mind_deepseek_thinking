@@ -288,9 +288,9 @@
             });
         }
         // console.log('Parsed body:', parsedBody);
-        // options.body = JSON.stringify(parsedBody);
+        options.body = JSON.stringify(parsedBody);
         // 5. Make the actual fetch call to get the response
-        const response = await originalFetch.apply(this, [url,JSON.stringify(parsedBody)]);
+        const response = await originalFetch.apply(this, args);
   
         // 6. Check the content-type for streaming
         if (response.headers.get('content-type')?.includes('text/event-stream')) {
