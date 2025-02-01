@@ -61,136 +61,158 @@
      * ------------------------------------------------------
      */
     async function processStreamingResponse(response) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-  
-      // We'll keep track of partial lines in `buffer` until a newline is encountered.
-      let buffer = '';
-      let reasoningStarted = false;
-      let reasoningEnded = false;
-      let startThinkingTime = null;
-  
-      // Create a new ReadableStream that we will push modified data into.
-      const stream = new ReadableStream({
-        async start(controller) {
-          const textEncoder = new TextEncoder();
-  
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-  
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-  
-              for (const line of lines) {
-                // Only parse lines that begin with 'data: '
-                if (line.startsWith('data: ')) {
-                  // If we get '[DONE]', pass it along and continue
-                  if (line.includes('[DONE]')) {
-                    controller.enqueue(textEncoder.encode(`${line}\n`));
-                    continue;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+      
+        let buffer = '';
+        let reasoningStarted = false;
+        let reasoningEnded = false;
+        let startThinkingTime = null;
+        let citations = []; // Store citations
+        let citationsReceived = false; // Flag to track if citations were received
+      
+        const stream = new ReadableStream({
+          async start(controller) {
+            const textEncoder = new TextEncoder();
+      
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                  // When stream is done, always append citations if they exist
+                  if (citations.length > 0) {
+                    const citationsText = '\n\n---\n\n' + citations.map(
+                      (citation, i) => `[${i + 1}]> ${citation}`
+                    ).join('\n');
+                    
+                    const citationsData = {
+                      choices: [{
+                        delta: { content: citationsText }
+                      }]
+                    };
+                    controller.enqueue(
+                      textEncoder.encode(`data: ${JSON.stringify(citationsData)}\n\n`)
+                    );
                   }
-  
-                  try {
-                    const data = JSON.parse(line.slice(6));
-  
-                    // We look for data.choices[0].delta
-                    if (data?.choices?.[0]?.delta) {
-                      const delta = data.choices[0].delta;
-  
-                      // If we find 'reasoning' with actual content, treat it as "thinking"
-                      if (delta.reasoning && delta.content === null) {
-                        // If this is the first chunk of actual reasoning content, show thinking header
-                        if (!reasoningStarted) {
-                          startThinkingTime = performance.now();
-                          const thinkingHeader = {
+                  break;
+                }
+      
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+      
+                for (const line of lines) {
+                  if (line.startsWith('data: ')) {
+                    if (line.includes('[DONE]')) {
+                      controller.enqueue(textEncoder.encode(`${line}\n`));
+                      continue;
+                    }
+      
+                    try {
+                      const data = JSON.parse(line.slice(6));
+      
+                      // Store citations if they exist in the data, but don't output them yet
+                      if (data.citations && !citationsReceived) {
+                        citations = data.citations;
+                        citationsReceived = true;
+                        
+                        // Skip this chunk if it only contains citations
+                        if (Object.keys(data).length === 1 && data.citations) {
+                          continue;
+                        }
+                      }
+      
+                      if (data?.choices?.[0]?.delta) {
+                        const delta = data.choices[0].delta;
+      
+                        if (delta.reasoning && delta.content === null) {
+                          if (!reasoningStarted) {
+                            startThinkingTime = performance.now();
+                            const thinkingHeader = {
+                              ...data,
+                              choices: [{
+                                ...data.choices[0],
+                                delta: { content: '💭 Thinking...\n\n> ' }
+                              }]
+                            };
+                            controller.enqueue(
+                              textEncoder.encode(`data: ${JSON.stringify(thinkingHeader)}\n\n`)
+                            );
+                            reasoningStarted = true;
+                          }
+      
+                          const content = delta.reasoning.replace(/\n/g, '\n> ');
+                          const modifiedData = {
                             ...data,
                             choices: [{
                               ...data.choices[0],
-                              delta: { content: '💭 Thinking...\n\n> ' }
+                              delta: { content }
                             }]
                           };
                           controller.enqueue(
-                            textEncoder.encode(`data: ${JSON.stringify(thinkingHeader)}\n\n`)
+                            textEncoder.encode(`data: ${JSON.stringify(modifiedData)}\n\n`)
                           );
-                          reasoningStarted = true;
+                        } else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
+                          reasoningEnded = true;
+      
+                          const thinkingDuration = Math.round(
+                            (performance.now() - startThinkingTime) / 1000
+                          );
+      
+                          const separatorData = {
+                            ...data,
+                            choices: [{
+                              ...data.choices[0],
+                              delta: {
+                                content: `\n\n💡 Thought for ${thinkingDuration} seconds\n\n---\n\n`
+                              }
+                            }]
+                          };
+                          controller.enqueue(
+                            textEncoder.encode(`data: ${JSON.stringify(separatorData)}\n\n`)
+                          );
+      
+                          controller.enqueue(textEncoder.encode(`${line}\n`));
+                        } else {
+                          // Remove citations from the current chunk if present
+                          const cleanData = { ...data };
+                          if (cleanData.citations) {
+                            delete cleanData.citations;
+                          }
+                          controller.enqueue(textEncoder.encode(`data: ${JSON.stringify(cleanData)}\n\n`));
                         }
-  
-                        // For reasoning content, only add blockquote prefix after newlines
-                        const content = delta.reasoning.replace(/\n/g, '\n> ');
-                        const modifiedData = {
-                          ...data,
-                          choices: [{
-                            ...data.choices[0],
-                            delta: { content }
-                          }]
-                        };
-                        controller.enqueue(
-                          textEncoder.encode(`data: ${JSON.stringify(modifiedData)}\n\n`)
-                        );
-                      }
-  
-                      // If normal content arrives and we have started reasoning but haven't ended it
-                      else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
-                        reasoningEnded = true;
-  
-                        // Calculate how many whole seconds were spent "thinking"
-                        const thinkingDuration = Math.round(
-                          (performance.now() - startThinkingTime) / 1000
-                        );
-  
-                        // Insert a line showing how long it was "thinking"
-                        const separatorData = {
-                          ...data,
-                          choices: [{
-                            ...data.choices[0],
-                            delta: {
-                              content: `\n\n💡 Thought for ${thinkingDuration} seconds\n\n---\n\n`
-                            }
-                          }]
-                        };
-                        controller.enqueue(
-                          textEncoder.encode(`data: ${JSON.stringify(separatorData)}\n\n`)
-                        );
-  
-                        // Now send along the actual content line
-                        controller.enqueue(textEncoder.encode(`${line}\n`));
                       } else {
-                        // If there's no reasoning content or reasoning has ended, just pass it along
-                        controller.enqueue(textEncoder.encode(`${line}\n`));
+                        // Remove citations from the current chunk if present
+                        const cleanData = { ...data };
+                        if (cleanData.citations) {
+                          delete cleanData.citations;
+                        }
+                        controller.enqueue(textEncoder.encode(`data: ${JSON.stringify(cleanData)}\n\n`));
                       }
-                    } else {
-                      // If there's no delta object, just pass through
+                    } catch (parseError) {
+                      console.error('Error parsing streaming data:', parseError);
                       controller.enqueue(textEncoder.encode(`${line}\n`));
                     }
-                  } catch (parseError) {
-                    console.error('Error parsing streaming data:', parseError);
+                  } else {
                     controller.enqueue(textEncoder.encode(`${line}\n`));
                   }
-                } else {
-                  // If line doesn't start with 'data: ', pass it as-is
-                  controller.enqueue(textEncoder.encode(`${line}\n`));
                 }
               }
+      
+              controller.close();
+            } catch (error) {
+              controller.error(error);
             }
-  
-            // Once the stream is fully read, close the controller
-            controller.close();
-          } catch (error) {
-            controller.error(error);
           }
-        }
-      });
-  
-      // Return a new Response that wraps our transformed stream
-      return new Response(stream, {
-        headers: response.headers,
-        status: response.status,
-        statusText: response.statusText
-      });
-    }
+        });
+      
+        return new Response(stream, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText
+        });
+      }
+      
   
     /**
      * ------------------------------------------------------
@@ -215,8 +237,16 @@
             .map(line => (line.trim() ? `> ${line}` : '>'))
             .join('\n');
   
-          // Insert reasoning before the main content
+        if (data.citations){
+        // Insert reasoning before the main content and then add the citations
+        message.content = `${quotedReasoning}\n\n---\n\n${message.content} ---\n\n${data.citations.map(
+            citation,i => `[${i+1}]> ${citation}`
+        )}`;
+        }else{
+              // Insert reasoning before the main content
           message.content = `${quotedReasoning}\n\n---\n\n${message.content}`;
+        }
+        
   
           // Return a new Response with the updated JSON
           return new Response(JSON.stringify(data), {
