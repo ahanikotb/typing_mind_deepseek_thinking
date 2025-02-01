@@ -11,7 +11,7 @@
      * 2. Deepseek API endpoint to intercept.
      * ------------------------------------------------------
      */
-    const DEEPSEEK_API_URL = 'api.deepseek.com/v1/chat/completions';
+    const DEEPSEEK_API_URL = 'openrouter.ai/api/v1/chat/completions';
   
     /**
      * ------------------------------------------------------
@@ -32,7 +32,7 @@
      * ------------------------------------------------------
      */
     function isDeepseekModel(body) {
-      return !!body.model && body.model.includes('deepseek');
+      return !!body.model &&( body.model.includes('deepseek') || body.model.includes('reasoning')); ;
     }
   
     /**
@@ -66,11 +66,8 @@
   
       // We'll keep track of partial lines in `buffer` until a newline is encountered.
       let buffer = '';
-      let contentStarted = false;
+      let reasoningStarted = false;
       let reasoningEnded = false;
-      let lastWasNewline = false;
-  
-      // Track when reasoning starts so we can measure total time.
       let startThinkingTime = null;
   
       // Create a new ReadableStream that we will push modified data into.
@@ -103,10 +100,10 @@
                     if (data?.choices?.[0]?.delta) {
                       const delta = data.choices[0].delta;
   
-                      // If we find 'reasoning_content', treat it as "thinking"
-                      if (delta.reasoning_content) {
-                        // If this is the first chunk of reasoning, record a start time
-                        if (!contentStarted) {
+                      // If we find 'reasoning' with actual content, treat it as "thinking"
+                      if (delta.reasoning && delta.content === null) {
+                        // If this is the first chunk of actual reasoning content, show thinking header
+                        if (!reasoningStarted) {
                           startThinkingTime = performance.now();
                           const thinkingHeader = {
                             ...data,
@@ -118,18 +115,11 @@
                           controller.enqueue(
                             textEncoder.encode(`data: ${JSON.stringify(thinkingHeader)}\n\n`)
                           );
-                          contentStarted = true;
+                          reasoningStarted = true;
                         }
   
-                        let content = delta.reasoning_content;
-  
-                        // If last chunk ended with newline, prefix this line with '>'
-                        if (lastWasNewline && content.trim()) {
-                          content = `> ${content}`;
-                        }
-                        lastWasNewline = content.endsWith('\n');
-  
-                        // Convert reasoning_content to normal "content"
+                        // For reasoning content, only add blockquote prefix after newlines
+                        const content = delta.reasoning.replace(/\n/g, '\n> ');
                         const modifiedData = {
                           ...data,
                           choices: [{
@@ -142,13 +132,13 @@
                         );
                       }
   
-                      // If normal content arrives and we haven't ended reasoning, show total time
-                      else if (delta.content && !reasoningEnded) {
+                      // If normal content arrives and we have started reasoning but haven't ended it
+                      else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
                         reasoningEnded = true;
   
                         // Calculate how many whole seconds were spent "thinking"
                         const thinkingDuration = Math.round(
-                          (performance.now() - (startThinkingTime || performance.now())) / 1000
+                          (performance.now() - startThinkingTime) / 1000
                         );
   
                         // Insert a line showing how long it was "thinking"
@@ -218,9 +208,9 @@
         const data = await cloned.json();
   
         // Look for reasoning_content in the first choice
-        if (data?.choices?.[0]?.message?.reasoning_content) {
+        if (data?.choices?.[0]?.message?.reasoning) {
           const message = data.choices[0].message;
-          const quotedReasoning = message.reasoning_content
+          const quotedReasoning = message.reasoning
             .split('\n')
             .map(line => (line.trim() ? `> ${line}` : '>'))
             .join('\n');
@@ -255,10 +245,10 @@
         const [url, options] = args;
         const requestBody = options?.body;
   
-        // // 1. If not a Deepseek URL, fall back to the original fetch
-        // if (!isDeepseekURL(url)) {
-        //   return originalFetch.apply(this, args);
-        // }
+        // 1. If not a Deepseek URL, fall back to the original fetch
+        if (!isDeepseekURL(url)) {
+          return originalFetch.apply(this, args);
+        }
   
         // 2. If no request body, we can't parse or modify
         if (!requestBody) {
@@ -278,17 +268,7 @@
         if (!isDeepseekModel(parsedBody) || isTitleRequest(parsedBody)) {
           return originalFetch.apply(this, args);
         }
-        console.log("here")
-        //         // ** NEW: Remove "reasoning" from each message **
-        // if (parsedBody.messages && Array.isArray(parsedBody.messages)) {
-        //     parsedBody.messages = parsedBody.messages.map(message => {
-        //     // Use object destructuring to remove the 'reasoning' property.
-        //     const { reasoning, ...rest } = message;
-        //     return rest;
-        //     });
-        // }
-        // // console.log('Parsed body:', parsedBody);
-        // options.body = JSON.stringify(parsedBody);
+  
         // 5. Make the actual fetch call to get the response
         const response = await originalFetch.apply(this, args);
   
