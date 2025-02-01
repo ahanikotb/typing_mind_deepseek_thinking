@@ -68,8 +68,7 @@
         let reasoningStarted = false;
         let reasoningEnded = false;
         let startThinkingTime = null;
-        let citations = []; // Store citations
-        let citationsReceived = false; // Flag to track if citations were received
+        let citations = []; // Add this to store citations
       
         const stream = new ReadableStream({
           async start(controller) {
@@ -79,7 +78,7 @@
               while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                  // When stream is done, always append citations if they exist
+                  // When stream is done, add citations if they exist
                   if (citations.length > 0) {
                     const citationsText = '\n\n---\n\n' + citations.map(
                       (citation, i) => `[${i + 1}]> ${citation}`
@@ -111,15 +110,9 @@
                     try {
                       const data = JSON.parse(line.slice(6));
       
-                      // Store citations if they exist in the data, but don't output them yet
-                      if (data.citations && !citationsReceived) {
+                      // Store citations if they exist in the data
+                      if (data.citations) {
                         citations = data.citations;
-                        citationsReceived = true;
-                        
-                        // Skip this chunk if it only contains citations
-                        if (Object.keys(data).length === 1 && data.citations) {
-                          continue;
-                        }
                       }
       
                       if (data?.choices?.[0]?.delta) {
@@ -174,20 +167,10 @@
       
                           controller.enqueue(textEncoder.encode(`${line}\n`));
                         } else {
-                          // Remove citations from the current chunk if present
-                          const cleanData = { ...data };
-                          if (cleanData.citations) {
-                            delete cleanData.citations;
-                          }
-                          controller.enqueue(textEncoder.encode(`data: ${JSON.stringify(cleanData)}\n\n`));
+                          controller.enqueue(textEncoder.encode(`${line}\n`));
                         }
                       } else {
-                        // Remove citations from the current chunk if present
-                        const cleanData = { ...data };
-                        if (cleanData.citations) {
-                          delete cleanData.citations;
-                        }
-                        controller.enqueue(textEncoder.encode(`data: ${JSON.stringify(cleanData)}\n\n`));
+                        controller.enqueue(textEncoder.encode(`${line}\n`));
                       }
                     } catch (parseError) {
                       console.error('Error parsing streaming data:', parseError);
@@ -212,6 +195,7 @@
           statusText: response.statusText
         });
       }
+      
       
   
     /**
@@ -240,7 +224,7 @@
         if (data?.citations){
             console.log(data.citations)
         // Insert reasoning before the main content and then add the citations
-        message.content = `${quotedReasoning}\n\n---\n\n${message.content}\n\n--- #Citations: \n\n${data.citations
+        message.content = `${quotedReasoning}\n\n---\n\n${message.content}\n\n---\n\n${data.citations
             .map((citation, i) => `[${i + 1}]> ${citation}`)
             .join("\n")}`;
         }else{
