@@ -63,54 +63,50 @@
     async function processStreamingResponse(response) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-    
-        // We'll keep track of partial lines in `buffer` until a newline is encountered.
+        const textEncoder = new TextEncoder();
         let buffer = '';
         let reasoningStarted = false;
         let reasoningEnded = false;
         let startThinkingTime = null;
         let citations = null;
-    
-        // Create a new ReadableStream that we will push modified data into.
+      
         const stream = new ReadableStream({
           async start(controller) {
-            const textEncoder = new TextEncoder();
-    
             try {
               while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-    
+      
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
-    
+      
                 for (const line of lines) {
-                  // Only parse lines that begin with 'data: '
+                  // Only process lines starting with "data: "
                   if (line.startsWith('data: ')) {
-                    // If we get '[DONE]', pass it along and continue
+                    // If the line indicates the stream is done, pass it along
                     if (line.includes('[DONE]')) {
                       controller.enqueue(textEncoder.encode(`${line}\n`));
                       continue;
                     }
-    
+      
                     try {
                       const data = JSON.parse(line.slice(6));
-                                                
-                        // Store citations if we find them
-                        if (data.citations && !citations) {
-                            citations = data.citations;
-                        }
-
-                      // We look for data.choices[0].delta
+      
+                      // Capture citations from any chunk that includes them
+                      if (data.citations && !citations) {
+                        citations = data.citations;
+                      }
+      
+                      // If the chunk has a delta object
                       if (data?.choices?.[0]?.delta) {
                         const delta = data.choices[0].delta;
-    
-                        // If we find 'reasoning' with actual content, treat it as "thinking"
+      
+                        // Process reasoning content
                         if (delta.reasoning && delta.content === null) {
-                          // If this is the first chunk of actual reasoning content, show thinking header
                           if (!reasoningStarted) {
                             startThinkingTime = performance.now();
+                            // Insert a "thinking" header message once
                             const thinkingHeader = {
                               ...data,
                               choices: [{
@@ -123,8 +119,8 @@
                             );
                             reasoningStarted = true;
                           }
-    
-                          // For reasoning content, only add blockquote prefix after newlines
+      
+                          // Prefix each line of the reasoning text with "> "
                           const content = delta.reasoning.replace(/\n/g, '\n> ');
                           const modifiedData = {
                             ...data,
@@ -137,17 +133,13 @@
                             textEncoder.encode(`data: ${JSON.stringify(modifiedData)}\n\n`)
                           );
                         }
-    
-                        // If normal content arrives and we have started reasoning but haven't ended it
+                        // When normal content arrives after reasoning has started
                         else if (delta.content !== null && reasoningStarted && !reasoningEnded) {
                           reasoningEnded = true;
-    
-                          // Calculate how many whole seconds were spent "thinking"
+                          // Calculate how long the "thinking" lasted
                           const thinkingDuration = Math.round(
                             (performance.now() - startThinkingTime) / 1000
                           );
-    
-                          // Insert a line showing how long it was "thinking"
                           const separatorData = {
                             ...data,
                             choices: [{
@@ -160,15 +152,14 @@
                           controller.enqueue(
                             textEncoder.encode(`data: ${JSON.stringify(separatorData)}\n\n`)
                           );
-    
-                          // Now send along the actual content line
+                          // Send along the actual content line
                           controller.enqueue(textEncoder.encode(`${line}\n`));
                         } else {
-                          // If there's no reasoning content or reasoning has ended, just pass it along
+                          // No special processing needed, pass the chunk through
                           controller.enqueue(textEncoder.encode(`${line}\n`));
                         }
                       } else {
-                        // If there's no delta object, just pass through
+                        // No delta object; pass through the chunk
                         controller.enqueue(textEncoder.encode(`${line}\n`));
                       }
                     } catch (parseError) {
@@ -176,34 +167,37 @@
                       controller.enqueue(textEncoder.encode(`${line}\n`));
                     }
                   } else {
-                    // If line doesn't start with 'data: ', pass it as-is
+                    // For lines not starting with "data: ", pass them through unchanged
                     controller.enqueue(textEncoder.encode(`${line}\n`));
                   }
                 }
               }
-              if (citations){
-                controller.enqueue( `\n\n---\n\n${citations
-                    .map((citation, i) => `[${i + 1}] > ${citation}`)
-                    .join("\n")}`)
+      
+              // Once the stream is fully read, if we have citations, format and send them properly
+              if (citations) {
+                const citationsText = citations
+                  .map((citation, i) => `[${i + 1}] > ${citation}`)
+                  .join("\n");
+                const citationsMessage = `data: ${JSON.stringify({ citations: citationsText })}\n\n`;
+                controller.enqueue(textEncoder.encode(citationsMessage));
               }
-              
-    
-              // Once the stream is fully read, close the controller
+      
+              // Close the controller when done
               controller.close();
             } catch (error) {
               controller.error(error);
             }
           }
         });
-    
-        // Return a new Response that wraps our transformed stream
+      
+        // Return a new response wrapping our modified stream
         return new Response(stream, {
           headers: response.headers,
           status: response.status,
           statusText: response.statusText
         });
       }
-    
+      
     /**
      * ------------------------------------------------------
      * Function: Process a non-streaming JSON response from Deepseek.
