@@ -237,11 +237,12 @@
             .map(line => (line.trim() ? `> ${line}` : '>'))
             .join('\n');
   
-        if (data.citations){
+        if (data?.citations){
+            console.log(data.citations)
         // Insert reasoning before the main content and then add the citations
-        message.content = `${quotedReasoning}\n\n---\n\n${message.content} ---\n\n${data.citations.map(
-            citation,i => `[${i+1}]> ${citation}`
-        )}`;
+        message.content = `${quotedReasoning}\n\n---\n\n${message.content}\n\n---\n\n${data.citations
+            .map((citation, i) => `[${i + 1}]> ${citation}`)
+            .join("\n")}`;
         }else{
               // Insert reasoning before the main content
           message.content = `${quotedReasoning}\n\n---\n\n${message.content}`;
